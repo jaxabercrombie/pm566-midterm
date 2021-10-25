@@ -1,0 +1,394 @@
+---
+title: "PM-566 Midterm"
+author: "Jaxon Abercrombie"
+date: "10/24/2021"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(tidyverse)
+library(dplyr)
+library(knitr)
+library(tidyr)
+library(cowplot)
+library(directlabels)
+devtools::install_github("UrbanInstitute/urbnmapr")
+```
+
+## Introduction
+
+The ongoing COVID-19 pandemic has come under greater control with the roll-out of COVID-19 vaccines starting back in December 2020. California's governor, Gavin Newsom, speaks regularly about the success that our state has had with controlling the virus through immunization efforts. While California is certainly diverse and varies in demographic composition and physical environment by county, investigating how vaccine uptake has varied by county would be fascinating. Identifying which counties are behind on COVID-19 immunizations would be crucial for intervening and attempting to increase the percent of vaccinated individuals in a more targeted fashion.
+
+Furthermore, toward the beginning of the vaccine roll-out, discourse about which vaccine company people should receive their dose(s) from was frequent. Whether someone received Moderna, Pfizer, or Johnson & Johnson vaccines would dictate whether they received one or two doses and had greater immunity against variants. Because of this, investigating how California counties may differ by vaccine company distribution would also be exciting. Additionally, comparing vaccination rates alongside cases and deaths may reveal changes in vaccination attitudes based on the ebb and flow of COVID-19 morbidity and mortality. For example, if cases for a specific variant grew largely over summer, would it be expected to have more vaccine uptake out of fear?
+
+All that said, the primary question at hand is: *How have COVID-19 vaccination rates varied by county in California since their initial roll-out?* Furthermore, there are two secondary questions that dig deeper into the data sets used: (1) *How do vaccination efforts vary by vaccine company across these counties (Pfizer, Moderna, Johnson & Johnson)?* and (2) *How do trends in cases and deaths potentially affect immunization rates for California as a whole?*
+
+## Methods
+
+There were two different sets of data used for this project: one including data for CA counties and their administered vaccine doses and another with data regarding COVID-19 cases and deaths for each CA county. The data about vaccine doses for each county, titled "Vaccines by California County," came from LA city's data site at [this link](https://data.lacity.org/COVID-19/Vaccines-by-California-County/rpp7-mevy), and it was downloaded by a CSV file. This particular set has data from the start of vaccine roll-out in mid-December 2020 up until mid-October 2021 and includes dose data for each vaccine company per county, county population count, and administration date. Data regarding COVID-related cases and deaths came from the California Department of Health and Human Services at [this link](https://data.chhs.ca.gov/dataset/covid-19-time-series-metrics-by-county-and-state/resource/046cdd2b-31e5-4d34-9ed3-b48cdbc4be7a), and it was also downloaded as a CSV file. COVID-related cases and deaths, both raw and cumulative, are included for every day since February 2020, and the number of total tests conducted is also included.
+
+#### Data Wrangling
+
+The data was first read and stored in two different variables.
+
+```{r data-read}
+vaxCA <- read.csv("CA Vaccine Data.csv")
+covidCA <- read.csv("CA Deaths and Cases.csv")
+```
+
+Because the sets would be combined by county and date, ensuring consistency in date format and variable name for county was important. After ensuring identical format and variable names, the two data sets were combined. Then, to filter the combined set by when vaccine roll-out began, the date set was altered to contain only dates from December 15, 2020 onward. Additionally, the date variable was altered to not include dates past October 20, 2021 because there was missing data for more recent dates.
+
+Upon browsing the merged data set, it appeared that many rows existed for each county for the dates of August 30, 2021 onward. To fix this, the average was applied for variables for those dates, essentially combining multiple instances into one for the duplicate date-county combinations.
+
+```{r data-merge, warnings = FALSE}
+covidCA <-
+  covidCA %>%
+  mutate(county = area)
+
+vaxCA <-
+  vaxCA %>%
+  mutate(date = as.Date(vaxCA$date, "%m/%d/%Y"))
+
+mergedCA <- merge(vaxCA, covidCA, 
+                  by = c("date","county"),
+                  all.x = TRUE)
+
+mergedCA <-
+  mergedCA %>%
+  filter(date >= as.Date("2020-12-15")) %>%
+  filter(date <= as.Date("2021-10-20")) %>%
+  group_by(date, county) %>% 
+  summarise(across(c(total_doses,cumulative_total_doses,
+                     pfizer_doses,cumulative_pfizer_doses,
+                     moderna_doses,cumulative_moderna_doses,
+                     jj_doses,cumulative_jj_doses,
+                     partially_vaccinated,
+                     total_partially_vaccinated,fully_vaccinated,
+                     cumulative_fully_vaccinated,at_least_one_dose,
+                     cumulative_at_least_one_dose,population,
+                     cases,cumulative_cases,deaths,
+                     cumulative_deaths,total_tests,
+                     cumulative_total_tests,positive_tests,
+                     cumulative_positive_tests), mean, .groups = date))
+```
+
+Additionally, variables were created for later ease with analysis and normalize county data to make it comparable to others. The variables created were transformations of the main variables to be used in analysis:
+
+1.  *dose_standard*: the number of cumulative total doses over time standardized by population size to make comparisons
+
+2.  *perc_vaccinated / perc_partial*: the percent of a county's population that is fully vaccinated / partially vaccinated
+
+```{r var-creation}
+mergedCA <-
+  mergedCA %>%
+  mutate(dose_standard = (cumulative_total_doses/population),
+         perc_vaccinated = (cumulative_fully_vaccinated/population)*100,
+         perc_partial = (cumulative_at_least_one_dose/population)*100)
+```
+
+To ensure missing values would not affect our analysis, the number of NAs were summed.
+
+```{r na-check}
+mergedNA <- sum(is.na(mergedCA))
+```
+
+Fortunately, there were `r mergedNA` NA values after cleaning and wrangling data.
+
+#### Exploratory Data Analysis
+
+Now that the *mergedCA* data is cleaned and wrangled, it can be explored more. A check on the expected number of observations was performed.
+
+```{r obs-check}
+expObs <- length(unique(mergedCA$date))*length(unique(mergedCA$county))
+actualObs <- nrow(mergedCA)
+```
+
+The number of expected observations after wrangling matches the observed number of observations (exp:`r expObs`, obs: `r actualObs`).
+
+Following this check, summary statistics using the "knitr" package were produced and displayed in the preliminary results section before data visualization and further analysis. Three summary tables were created: one for population data (population count, cases, deaths), one for vaccine status data, and one for vaccine company data.
+
+#### Data Visualization
+
+The main tool used to create visualizations of data was *ggplot2*. The package offered ways to create appealing bar graphs, time series plots, and use *facet_wrap() t*o de-clutter plots and focus on data county-by-county.
+
+The visualizations created were:
+
+1.  Figure 1: A time series plot depicting how vaccination rates have changed over time by county
+
+2.  Figure 2: A bar graph depicting counties by highest percent fully vaccinated, in descending order
+
+3.  Figure 3: Pie charts demonstrating the distribution of different vaccine company dose administrations by county
+
+4.  Figure 4: A vertically-aligned grid of time series plots (one of total cumulative vaccine doses, one of cases, and one of deaths) to see if trends in mortality/morbidity are related to increased/decreased vaccine hesitancy
+
+## Preliminary Results
+
+For some results involving vaccine company differences, it should be acknowledged that Johnson & Johnson requires one dose to be considered fully vaccinated, while it takes two for Moderna and Pfizer. That reality alone may affect statistics involving Johnson & Johnson dose percentages because only one dose would be taken compared to two for other companies' vaccines.
+
+#### Summary Tables
+
+Three summary tables for the data were created to assess minimums, maximums, averages, and standard deviations to ensure no variables were worrisome before continuing with analysis. Variables checked through these tables were those that had not undergone transformation (ex: *fully_vaccinated* rather than *perc_vaccinated* or *cumulative_fully_vaccinated*) to avoid redundancy.
+
+The first table includes data regarding vaccine dose counts for each county, and it also is stratified by vaccine company.
+
+```{r pop-table}
+mergedCA %>% 
+  group_by(county) %>%
+  summarise(Cases_min = min(cases), 
+            Cases_mean = mean(cases),
+            Cases_max = max(cases),
+            Cases_sd = sd(cases),
+            Deaths_min = min(deaths), 
+            Deaths_mean = mean(deaths),
+            Deaths_max = max(deaths),
+            Deaths_sd = sd(deaths),
+            Pop_min = min(population), 
+            Pop_mean = mean(population),
+            Pop_max = max(population),
+            Pop_sd = sd(population)) %>% 
+  knitr::kable(col.names = c("County", 
+                             "Min Cases", 
+                             "Mean Cases", 
+                             "Max Cases",
+                             "SD Cases",
+                             "Min Deaths", 
+                             "Mean Deaths", 
+                             "Max Deaths",
+                             "SD Deaths",
+                             "Min Pop", 
+                             "Mean Pop", 
+                             "Max Pop",
+                             "SD Pop"), digits = 2, "pipe")
+```
+
+Based on the above table, it is evident that more populous counties experience more cases and deaths overall, which is expected and likely relies on population density to happen. Because this data has not yet spanned an entire year, population counts have not updated in the data. Essentially, the population count has remained the same for data despite time elapsing, people being born, and people passing away. The minimum values of the chosen variables do not reach into negative values, and the maximum values are not unusually high, which is good. Data in this table was validated by an [external source](https://usafacts.org/visualizations/coronavirus-covid-19-spread-map/state/california) by comparing some counties' maximum cases and deaths to the source's dashboard.
+
+The second table includes data about vaccination status by county, split up by whether individuals were partially or fully vaccinated.
+
+```{r status-table}
+mergedCA %>% 
+  group_by(county) %>%
+  summarise(Partially_min = min(partially_vaccinated), 
+            Partially_mean = mean(partially_vaccinated),
+            Partially_max = max(partially_vaccinated),
+            Partially_sd = sd(partially_vaccinated),
+            Fully_min = min(fully_vaccinated), 
+            Fully_mean = mean(fully_vaccinated),
+            Fully_max = max(fully_vaccinated),
+            Fully_sd = sd(fully_vaccinated),) %>% 
+  knitr::kable(col.names = c("County", 
+                             "Min Partial Vax", 
+                             "Mean Partial Vax", 
+                             "Max Partial Vax",
+                             "SD Partial Vax",
+                             "Min Full Vax", 
+                             "Mean Full Vax", 
+                             "Max Full Vax",
+                             "SD Full Vax"), digits = 2, "pipe")
+```
+
+Based on the above table, the number progression from partially vaccinated to fully vaccinated makes sense; there are overall less fully vaccinated people than partially vaccinated people. In other words, to be fully vaccinated means you reached partial vaccination at one point. Additionally, partial vaccination has minimum values that extend beyond 0 while full vaccination does not. This reflects how someone cannot be fully vaccinated immediately and needs a first dose to reach that status eventually. No values appear abnormal in this table as either, fortunately.
+
+The third table includes data regarding vaccine dose counts and also is stratified by vaccine company.
+
+```{r dose-table}
+mergedCA %>% 
+  group_by(county) %>%
+  summarise(Doses_min = min(total_doses), 
+            Doses_mean = mean(total_doses),
+            Doses_max = max(total_doses),
+            Doses_sd = sd(total_doses),
+            JJ_min = min(jj_doses),
+            JJ_mean= mean(jj_doses),
+            JJ_max = max(jj_doses),
+            JJ_sd = sd(jj_doses),
+            Mod_min = min(moderna_doses),
+            Mod_mean= mean(moderna_doses),
+            Mod_max = max(moderna_doses),
+            Mod_sd = sd(moderna_doses),
+            Pfi_min = min(pfizer_doses),
+            Pfi_mean= mean(pfizer_doses),
+            Pfi_max = max(pfizer_doses),
+            Pfi_sd = sd(pfizer_doses)) %>% 
+  knitr::kable(col.names = c("County", 
+                             "Min Doses", 
+                             "Mean Doses", 
+                             "Max Doses",
+                             "SD Doses",
+                             "Min JJ Doses", 
+                             "Mean JJ Doses", 
+                             "Max JJ Doses",
+                             "SD JJ Doses",
+                             "Min Mod Doses", 
+                             "Mean Mod Doses", 
+                             "Max Mod Doses",
+                             "SD Mod Doses",
+                             "Min Pfi Doses", 
+                             "Mean Pfi Doses", 
+                             "Max Pfi Doses",
+                             "SD Pfi Doses"), digits = 2, "pipe")
+```
+
+This table provides the most unique information to me compared to the other two. Again, minimums and maximums for these values do not appear to deviate from normal, expected values. Because the two data sets used in this analysis were downloaded from reputable, government agencies, the data quality is reliable. Already there are clear differences in vaccine company means, with Pfizer most often administered, Moderna second, and Johnson & Johnson third. Visualizing this through pie charts will be interesting to see how the total doses are shared by company for each county.
+
+#### Figures
+
+[Figure 1: Vaccination Rates Over Time by County]{.ul}
+
+The following plots shows how administered vaccine doses have accumulated since December 2020. Each county has its own plot, and the y-variable was standardized earlier to make counties' data comparable.
+
+```{r fig1, fig.height = 16, fig.width = 12}
+mergedCA %>%
+  ggplot(data, mapping = aes(x = date, y = dose_standard, 
+                             color = county)) +
+  geom_line() + 
+  xlab("Doses per Person") +
+  facet_wrap(vars(county), ncol = 5) +
+  theme(legend.position = "none", strip.background = element_blank(),
+        strip.text = element_text(size = rel(0.8), margin = margin()),
+        panel.spacing = unit(3, "pt")) +
+  labs(x = "Date", y = "Cumulative Total Doses (Standardized by Population Size)")
+```
+
+[Figure 2: Percent Fully Vaccinated by County]{.ul}
+
+The following figure shows the percent of individuals fully vaccinated by county in descending order.
+
+```{r fig2, fig.height = 10, fig.width = 12}
+mergedCA <-
+  mergedCA %>%
+  group_by(county) %>%
+  mutate(maxPerc = max(perc_vaccinated)/310)
+
+mergedCA %>%
+  ggplot(aes(y = reorder(county, maxPerc), x = maxPerc)) +
+  geom_bar(stat = "identity") +
+  labs(y = "County", x = "Percent Fully Vaccinated by 10/20/2021") +
+  theme(legend.position = "none")
+```
+
+[Figure 3: Pie Chart of Vaccines Administered Based on Company across Counties]{.ul}
+
+The following pie charts demonstrate how the administered doses vary by vaccine company for each county.
+
+```{r fig4, fig.height = 16, fig.width = 14}
+companyVax <- 
+  mergedCA %>%
+  group_by(county) %>%
+  summarise(maxJJ = 
+              (max(cumulative_jj_doses)/max(cumulative_total_doses))*100,
+            maxMod = 
+              (max(cumulative_moderna_doses)/max(cumulative_total_doses))*100,
+            maxPfi = 
+              (max(cumulative_pfizer_doses)/max(cumulative_total_doses)*100))
+
+county <- companyVax$county
+JJ <- companyVax$maxJJ
+Moderna <- companyVax$maxMod
+Pfizer <- companyVax$maxPfi
+df <- data.frame(county, JJ, Moderna, Pfizer)
+
+require(tidyr)
+companyVax <- gather(df, variable,value, -county)
+
+companyVax %>%
+  ggplot(aes(x="", y=value, fill=variable)) +
+  geom_bar(stat="identity") +
+  coord_polar("y", start=0) +
+  facet_wrap(vars(county), ncol = 8) +
+  labs(x = "", y = "", legend = "Vaccine Company") +
+  theme(axis.text.x=element_blank()) +
+  scale_fill_brewer("Blues")
+```
+
+[Figure 4: Comparing Trends in Vaccination to Trends in COVID-19 Cases and Deaths (All of CA)]{.ul}
+
+The following three figures are aligned vertically so that trends can be acknowledged based on date. The first plot depicts cases since the start of vaccine roll-out. The second plot depicts deaths since the start of vaccine roll-out. The third plot depicts the total number of doses administered per day since the start of vaccine roll-out. Focus will be placed on the month of July and onward.
+
+```{r fig5, fig.height = 18, fig.width = 12}
+pCases <-
+  mergedCA %>%
+  ggplot(mapping = aes(x = date, 
+                       y = cases)) +
+  geom_line() + 
+  xlab("") +
+  theme(legend.position = "none", strip.background = element_blank(),
+        strip.text = element_text(size = rel(0.8), margin = margin()),
+        panel.spacing = unit(3, "pt")) +
+  labs(x = "Date", y = "Cases")
+
+pDeaths <-
+  mergedCA %>%
+  ggplot(mapping = aes(x = date, 
+                       y = deaths)) +
+  geom_line() + 
+  xlab("") +
+  theme(legend.position = "none", strip.background = element_blank(),
+        strip.text = element_text(size = rel(0.8), margin = margin()),
+        panel.spacing = unit(3, "pt")) +
+  labs(x = "Date", y = "Deaths")
+  
+  
+pDoses <-  
+  mergedCA %>%
+  ggplot(mapping = aes(x = date, 
+                       y = total_doses)) +
+  geom_line() + 
+  xlab("") +
+  theme(legend.position = "none", strip.background = element_blank(),
+        strip.text = element_text(size = rel(0.8), margin = margin()),
+        panel.spacing = unit(3, "pt")) +
+  labs(x = "Date", y = "Total Doses Administered")
+  
+
+plot_grid(pDeaths, pCases, pDoses, 
+          ncol = 1, 
+          labels = c("Cases", "Deaths", "Total Doses"))
+```
+
+## Conclusion
+
+Conclusions to the primary question and two secondary questions of this data project were found.
+
+In regard to vaccination differences across California counties, it is evident that:
+
+-   All counties follow an S-like curve when looking at cumulative vaccine doses, though steepness differs (Figure 1). The S-shape explains a surge in vaccination rates, with cumulative dose counts plateauing at extremes. This is explainable by eligibility, since at the start of vaccine roll-out (Jan-March 2021), not many people could get vaccinated---just the elderly and healthcare officials. Now, past July 2021, we are seeing a plateau because most individuals who wanted vaccine doses received them.
+
+    -   After around April, when eligibility to get a vaccine continued to widen, a greater amount of individuals were able to receive their vaccine and did so. Notably steep increases in vaccination appear to take place in counties like Napa, Santa Clara, Alpine, Alameda, and San Francisco, while significantly less steep increases appear in counties like Yuba, Kern, and Modoc.
+
+        -   This generally seems to portray that more urban or suburban counties have greater rates of fully vaccinated individuals than those that have rural settings.
+
+    -   Regardless of trends by county, there have been general increases in doses being administered each day despite the surge of getting vaccinated slowing down.
+
+-   The majority of counties in Northern California (Marin, San Francisco, Santa Clara) have a greater proportion of fully vaccination individuals than countries in Central (Tulare, Fresno) and Southern California (San Bernardino, Riverside) based on Figure 2.
+
+    -   The lowest percentage of fully vaccinated individuals belongs to Lassen County, with about 25% of individuals fully vaccinated. On the other hand, Marin County has the most with about 78%.
+
+    -   Roughly 25% of counties have more than 60% of their populations fully vaccinated, and around 50% of counties between 45% and 60% are fully vaccinated. Overall the numbers are low compared to the state's goals.
+
+-   Much of these differences could be most attributable to vaccine access and/or political affiliation. Since more rural areas likely face travel-related obstacles to receive vaccines and more conservative areas likely hold anti-vaccine sentiment, it seems reasonable that these trends exist in the data.
+
+    -   Of the two, vaccine access may pose a larger threat. This is because many of the counties in the lower half of Figure 2 are the farthest from urban centers and likely have less vaccination services within their counties.
+
+When assessing whether specific vaccine companies were more prevalent in some areas than others, the pie charts produced tell an intriguing story about whether Moderna or Pfizer dominate certain counties.
+
+-   The third summary statistic table demonstrates that Pfizer doses are given most often, Moderna second, and Johnson & Johnson third.
+
+-   Based on Figure 3, we can see that Moderna and Pfizer essentially take turns with being a county's most popular vaccine. Johnson & Johnson, even when acknowledging that it is a single-dose vaccine, consistently makes up small portions of the charts. Despite Johnson & Johnson being easier with one dose, individuals still appear to receive other companies' vaccines more often.
+
+-   It appears that the Pfizer vaccine dominates in the most well-known urban centers like Los Angeles, San Francisco, and San Diego Counties while Moderna is the more common vaccine in rural places like Sierra, Shasta, Plumas, and Lake Counties---just to name a few (Figure 3).
+
+-   This difference in vaccine prevalence between urban and rural areas is neat to see. It is possible that this could be attributed to Pfizer being the first vaccine released and the most populous/urban counties having robust vaccination centers to serve their people with Pfizer. Pfizer being the first available vaccine would significantly impact the number of individuals who have it since it had great demand. Also, since Moderna has longer wait periods between doses and Johnson & Johnson was removed from the market at one point, Pfizer's domination is even more reasonable.
+
+When assessing whether trends in cases and deaths potentially caused trends in vaccine, there is a slight increase in vaccinations when variants were widespread over the summer of 2021 based on Figure 4.
+
+-   It appears that the increase in deaths and cases between July and August could have influenced the visible increase in vaccine doses administered during the same time and up until now, October 2021. Because the summer was a great demonstration of how vaccines protect people and prevent severe illness and death, it makes sense that people who originally were skeptical changed their mind.
+
+-   It appears that another small vaccination surge happened in October, and any increase in vaccination is beneficial. Especially as we gear up for winter months, increasing the percent of individuals vaccinated is important.
+
+-   Now that booster shots are becoming a hot topic, it is unclear whether the dose surge in October could be attributed to booster shots or people receiving their first or second doses.
+
+Overall, this was an extremely exciting project to pursue. Especially as the motivation of unvaccinated individuals to get vaccinated is more important each day, identifying which counties can improve on vaccination is crucial. The tables and plots produced can also help answer several other COVID-related questions, and they assisted in finding trends related to vaccine companies and state-wide vaccination trends that are likely influenced by cases and deaths. In the future, it would be neat to incorporate data about booster shots, do this analysis on a country-wide scale, analyze how COVID-19 fluctuates this winter, and produce maps of California with the information and even more unique visualizations.
